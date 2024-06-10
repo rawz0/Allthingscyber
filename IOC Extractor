@@ -1,0 +1,76 @@
+import re
+import csv
+import os
+from PyPDF2 import PdfReader
+
+# Function to extract SHA-256 hashes, descriptions, and IP addresses from a document
+def extract_iocs(content):
+    sha256_pattern = re.compile(r'\b[A-Fa-f0-9]{64}\b')
+    description_pattern = re.compile(r'Description: (.*?)(?=\b[A-Fa-f0-9]{64}\b|Description:|$)', re.DOTALL)
+    ip_pattern = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')
+    
+    sha256_hashes = sha256_pattern.findall(content)
+    descriptions = description_pattern.findall(content)
+    ip_addresses = ip_pattern.findall(content)
+    
+    descriptions = [desc.strip() for desc in descriptions]
+    
+    if len(sha256_hashes) != len(descriptions):
+        descriptions += [''] * (len(sha256_hashes) - len(descriptions))
+    
+    return sha256_hashes, descriptions, ip_addresses
+
+# Function to read PDF documents and extract text
+def read_pdf(file_path):
+    reader = PdfReader(file_path)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() if page.extract_text() else ""
+    return text
+
+# Function to read documents and extract IOCs
+def read_and_extract(file_paths):
+    all_sha256_hashes = []
+    all_descriptions = []
+    all_ip_addresses = []
+    
+    for file_path in file_paths:
+        try:
+            content = read_pdf(file_path)
+            sha256_hashes, descriptions, ip_addresses = extract_iocs(content)
+            all_sha256_hashes.extend(sha256_hashes)
+            all_descriptions.extend(descriptions)
+            all_ip_addresses.extend(ip_addresses)
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+    
+    return all_sha256_hashes, all_descriptions, all_ip_addresses
+
+# Function to write the extracted data to a CSV file
+def write_to_csv(file_path, sha256_hashes, descriptions, ip_addresses):
+    with open(file_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['SHA-256 Hash', 'Description', 'IP Address'])
+        
+        max_length = max(len(sha256_hashes), len(descriptions), len(ip_addresses))
+        
+        for i in range(max_length):
+            hash = sha256_hashes[i] if i < len(sha256_hashes) else ''
+            description = descriptions[i] if i < len(descriptions) else ''
+            ip_address = ip_addresses[i] if i < len(ip_addresses) else ''
+            writer.writerow([hash, description, ip_address])
+
+# Path to the directory containing security advisory documents
+directory_path = os.path.dirname(os.path.abspath(__file__))
+
+# Collect all PDF files in the directory
+document_paths = [os.path.join(directory_path, file) for file in os.listdir(directory_path) if file.endswith('.pdf')]
+
+# Extract the data
+sha256_hashes, descriptions, ip_addresses = read_and_extract(document_paths)
+
+# Write the extracted data to CSV on Desktop
+output_path = os.path.join(os.path.expanduser('~'), 'Desktop', 'Extract IOCs.csv')
+write_to_csv(output_path, sha256_hashes, descriptions, ip_addresses)
+
+print(f"Extraction completed. Check the file at {output_path}")
